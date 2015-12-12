@@ -32,8 +32,7 @@ const string PRIMITIVE_TYPE_NAME[] = {"int", "real", "str"};
 /* Every tree represents a type.
  only ARGLIST and LISTTYPE can be a tree with children;
  all of its children are pointers to types;
- a query has at most 4 top trees.
- TODO: getNameStr for Listtype and Functype*/
+ a query has at most 4 top trees. */
 class Tree {
 public:
     state type; // TYPEVAR, INT, REAL, STR, FUNCTYPE, LISTTYPE
@@ -42,12 +41,10 @@ public:
     vector<Tree*> *children;
     Tree *parent;
     virtual void addChild(Tree* ch) {}
-    virtual string getNameStr() { return nameStr; }
     virtual string getOutputStr(map<string, Tree*>& bounds, vector<set<string>>& eqvl) { return nameStr; }
     virtual ~Tree() {}
 };
 
-/* MARK: doing*/
 class VarTree: public Tree {
 public:
     VarTree() {
@@ -61,14 +58,13 @@ public:
             return itVar->second->getOutputStr(bounds, eqvl);
         }
         
-        return nameStr;
+        return getReplaceVarnameStr(eqvl);
     }
     
-    string getReplaceVarnameStr(string& nameStr, vector<set<string>>& eqvl) {
+    string getReplaceVarnameStr(vector<set<string>>& eqvl) {
         for (vector<set<string>>::size_type i = 0, len = eqvl.size(); i < len; ++i) {
-            set<string>::iterator itSet = eqvl[i].find(nameStr), setEnd = eqvl[i].end();
-            if (itSet != setEnd) { return *(eqvl[i].begin()); }
-            
+            set<string>::iterator sit = eqvl[i].find(nameStr), setEnd = eqvl[i].end();
+            if (sit != setEnd) { return *(eqvl[i].begin()); }
         }
         return nameStr;
     }
@@ -96,14 +92,14 @@ public:
         children->push_back(ch);
         final = final && ch->final;
     }
-    string getNameStr() {
-        string rightPart = ") -> " + children->back()->getNameStr();
+    string getOutputStr(map<string, Tree*>& bounds, vector<set<string>>& eqvl) {
+        string rightPart = ") -> " + children->back()->getOutputStr(bounds, eqvl);
         nameStr = "(";
         vector<Tree*>::size_type i = 0, len = children->size() - 2;
         for (; i < len; i++) {
-            nameStr += (*children)[i]->getNameStr() + ", ";
+            nameStr += (*children)[i]->getOutputStr(bounds, eqvl) + ", ";
         }
-        nameStr += (*children)[i]->getNameStr() + rightPart; //FIXME: Possible problems!
+        nameStr += (*children)[i]->getOutputStr(bounds, eqvl) + rightPart; //FIXME: Possible problems!
         return nameStr;
     }
     virtual ~FuncTree() {
@@ -125,8 +121,8 @@ public:
     Tree* getChild() {
         return children->front();
     }
-    string getNameStr() {
-        nameStr = "[" + children->front()->getNameStr() + "]";
+    string getOutputStr(map<string, Tree*>& bounds, vector<set<string>>& eqvl) {
+        nameStr = "[" + children->front()->getOutputStr(bounds, eqvl) + "]";
         return nameStr;
     }
     virtual ~ListTree() {
@@ -162,12 +158,15 @@ void finishNode(stack<state>& trans, stack<Tree*>& nodes);
 static inline string &trim(string &s);
 
 /* Unifiers */
+void boundFreeVarToFinalTermInMap(Tree *var, Tree *term);
+bool isFreeVarAPosteriorOfUnfinalListOrFunc (Tree *var, Tree *term);
 bool equalsFinalTerm (Tree* t1, Tree* t2);
+void insertTypevarNamePairToEqvl(string& s1, string& s2);
+void unifyChildren(Tree* left, Tree* right);
 void unify(Tree* left, Tree* right);
 void unifyTT(Tree* left, Tree* right);
-void unifyTV(Tree* term, Tree* var);
+void unifyVT(Tree* term, Tree* var);
 void unifyVV(Tree* left, Tree* right);
-void boundVarToFinalTermInMap(Tree *var, Tree *term);
 
 int main(int argc, const char * argv[]) {
     //    string line;
@@ -180,16 +179,21 @@ int main(int argc, const char * argv[]) {
 
 /* MARK: test */
 int test() {
-    //    set<string> item;
-    //    string s1 = "hello", s2 = "`b";
-    //    item.insert(s1);
-    //    item.insert(s2);
-    //    eqvl[0] = *new set<string>("`a", "`b");
-    //    eqvl[0] = item;
-    //eqvl.push_back(item);
-    //    string s =  *(eqvl[0].begin());
-    //string s = "hello";
-    //println(s);
+        string line;
+        while(getline(cin, line)) {
+            processLine(line);
+            cout << bounds.size() << endl;
+        }
+//    string line = "(int, int) -> `a & (`a, int) -> int ";
+//    processLine(line);
+//    string s1 = "`a", s2 = "`b", s3 = "`c";
+//    Tree* var = new VarTree(); //b
+//    var->nameStr = s3;
+//    insertTypevarNamePairToEqvl(s1, s2);
+//    Tree* tint = new PrimTree(0);
+//    boundFreeVarToFinalTermInMap(var, tint);
+//    cout << bounds[s1]->nameStr << endl;
+    cout << bounds.size() << endl;
     return 0;
 }
 
@@ -200,9 +204,7 @@ int processLine(string& line) {
     if (s.compare("QUIT") == 0) { exit(0); } // process "QUIT"
     deleteAllSpacesAndTabs(s, sn);
     if (!isValidInputLine(sn)) { printError(); }
-    else {
-        cout << equalsFinalTerm(leftTree, rightTree) << endl;
-    }
+    unify(leftTree, rightTree);
     return 0;
 }
 
@@ -422,6 +424,51 @@ static inline string &trim(string &s) {
     return s;
 }
 
+/* Insert new typevar equivalence pair. */
+void insertTypevarNamePairToEqvl(string& s1, string& s2) {
+    set<string> item;
+    item.insert(s1);
+    item.insert(s2);
+    eqvl.push_back(item);
+}
+
+/* Bound the var to the term in bounds.
+ case_0: var not in the map,                                        #add pair to bounds: bound var to term in bounds
+ //case_1: var has already bounded to the same final term,            #do nothing
+ //case_1: var has already bounded to the different address, same type,  final term,            #compare identity, dif>>BOTTOM or same>>repace.
+ //case_2: var has already bounded to a different address, same type, not final term, #change var to bound to new final term in bounds
+ //case_3: var has already bounded to a different type of term,       #BOTTOM
+ case_4: var has not bounded to any term, but equals to other vars, #update the var and its equals to bound to term in maps
+ */
+void boundFreeVarToFinalTermInMap(Tree *var, Tree *term) {
+    for (vector<set<string>>::iterator vit = eqvl.begin(), vEnd = eqvl.end(); vit != vEnd; ++vit) {
+        set<string>::iterator sit = vit->find(var->nameStr), setEnd = vit->end();
+        if (sit != setEnd) { // delete this set, bound every var in this set to the final term
+            for(set<string>::iterator sit = vit->begin(), sEnd = vit->end(); sit != sEnd; ++sit) {
+                bounds[*sit] = term;
+            }
+            eqvl.erase(vit);
+        }
+    }
+    // no equivalence to currently
+    bounds[var->nameStr] = term;
+}
+
+/* Use DFS to find whether a free variable appears in the posteriors of a not-final LISTTYPE or FUNCTYPE.*/
+bool isFreeVarAPosteriorOfUnfinalListOrFunc(Tree *var, Tree *term) {
+    for (vector<Tree*>::iterator it1 = term->children->begin(), itEnd = term->children->end(); it1 != itEnd; ++it1) {
+        if ((*it1)->type == TYPEVAR && ((*it1)->getOutputStr(bounds, eqvl)).compare(var->getOutputStr(bounds, eqvl)) == 0) { return true; }
+    }
+    return false;
+}
+
+/* Unify all children of a LISTTYPE or a FUNCTYPE */
+void unifyChildren(Tree* left, Tree* right) { // MARKING: 遍历children
+    for (vector<Tree*>::iterator it1 = left->children->begin(), it2 = right->children->begin(); it1 != left->children->end(); ++it1, ++it2) {
+        unify(*it1, *it2); // not tested
+    }
+}
+
 /*  ERR: func & func with different lengths of arglists.
  BOTTOM:
  case_1: two different final types. (eg. int & real)
@@ -429,66 +476,67 @@ static inline string &trim(string &s) {
  return 0: successfully unified. */
 void unify(Tree* left, Tree* right) {
     if (left->type == TYPEVAR && right->type == TYPEVAR) { unifyVV(left, right); }
-    else if (left->type == TYPEVAR && right->type != TYPEVAR) { unifyTV(right, left); }
-    else if (left->type != TYPEVAR && right->type == TYPEVAR) { unifyTV(left, right); }
+    else if (left->type == TYPEVAR && right->type != TYPEVAR) { unifyVT(left, right); }
+    else if (left->type != TYPEVAR && right->type == TYPEVAR) { unifyVT(right, left); }
     else { unifyTT(left, right); }
 }
 
 
-/* MARK: unify two terms. (NOT TESTED)
+/* Unify two terms. (NOT TESTED)
  case_0: different types:               eg. int & real/()/[],                   # BOTTOM
  case_1: both func, different lengths of arglist                                # ERR
  case_2: both final:                    eg. int & int,                          # do nothing
  case_3: at least one is not final:     eg. final() & (B1, B2, ... Bn)          # for every (Ai, Bi), unify(Ai, Bi)*/
 void unifyTT(Tree* left, Tree* right) {
-    if (left->type != right->type) { printBottom(); }
+    if (left->type != right->type) {
+        printBottom();
+    }
     if (left->type == FUNCTYPE && right->type == FUNCTYPE && left->children->size() != right->children->size()) { printError(); }
     if (left->final && right->final) {
-        if (equalsFinalTerm(left, right)) { printBottom(); }
+        if (!equalsFinalTerm(left, right)) {
+            printBottom();
+        }
         else { return; }
     } else {
-        for (vector<Tree*>::iterator it1 = left->children->begin(), it2 = right->children->begin(); it1 != left->children->end(); ++it1, ++it2) {
-            unify(*it1, *it2); // not tested
-        }
+        unifyChildren(left, right);
     }
     
 }
 
 
-/* TODO: unify a term and a variable.
+/* Unify a term and a variable.
  case_0: bound(var) =   final(term),    #do nothing
  case_1: bound(var) !=  final(term),    #BOTTOM
  case_2: bound(var),    unfinal(term),  #check bound(var)-type with term and unify or BOTTOM
+                                                // set term and all of its prosteriors to final, bound its prosterious to vb's respective child.
  case_1: unbound(var),  final(term),    #bound the var to the term and update bounds.
  case_2: unbound(var),  unfinal(term),  #try finding var's name in term's posterities. If found, #BOTTOM.
+ 
+ //term has to be FUNCTYPE or LISTTYPE, else it is final
  */
-void unifyTV(Tree* var, Tree* term) {
-    string varStr = var->getNameStr();
+void unifyVT(Tree* var, Tree* term) {
+    string varStr = var->nameStr;
     map<string, Tree*>::iterator varBound = bounds.find(varStr), bEnd = bounds.end();
-    if (varBound == bEnd && term->final) {
-        if (!equalsFinalTerm(varBound->second, term)) { printBottom(); }
-    } else if (varBound == bEnd && !term->final) {
+    if (varBound == bEnd && term->final) {              //unbound(var), final(term)
+        boundFreeVarToFinalTermInMap(var, term);
+    } else if (varBound != bEnd && !term->final) {      //bound(var), unFinal(term)
         Tree* vb = varBound->second;
-        if (vb->type != term->type) { printBottom(); }
-        if (vb->type == FUNCTYPE || vb->type == LISTTYPE) { // set term and all of its prosteriors to final, bound its prosterious to vb's respective child.
-            
-        } else {
-            boundVarToFinalTermInMap(var, term);
+        if (vb->type != term->type) {
+            printBottom();
         }
-    } else if (varBound != bEnd && term->final) {
-        
-    } else { //unbound(var),  unfinal(term)
-        
+        unifyChildren(vb, term); // FIXME: possible improvements here.
+    } else if (varBound != bEnd && term->final) {       //bound(var), final(term)
+        if (!equalsFinalTerm(varBound->second, term)) { printBottom(); }
+    } else {                                            //unbound(var),  unfinal(term)
+        if (isFreeVarAPosteriorOfUnfinalListOrFunc(var, term)) {
+            printBottom();
+        }
     }
-    
-    // TODO: term is not final.Try finding var's name in term's posterities.
-    
-    // TODO: If found, #BOTTOM; else, bound the var to the term in bounds.
     
 }
 
 
-/* MARK: unify two typevars. (not tested)
+/* Unify two typevars. (not tested)
  Traverse both varnames in bounds to find whether eigher is bound to a final tree.
  case_0: one is bounded to final, the other not,    #bound the other and all its equivalence to the final term.
  case_1: both are bounded to same final,            #do nothing
@@ -497,7 +545,7 @@ void unifyTV(Tree* var, Tree* term) {
  Update everything in bounds that use the two name as keys.
  */
 void unifyVV(Tree* left, Tree* right) {
-    string l = left->getNameStr(), r = right->getNameStr();
+    string l = left->nameStr, r = right->nameStr;
     map<string, Tree*>::iterator mitLeft = bounds.find(l), mitRight = bounds.find(r); //TODO: 改两遍遍历为一遍遍历
     
     if (mitLeft == bounds.end() && mitRight == bounds.end()) { /* neither is bounded, update the eqvl sets. */
@@ -510,10 +558,7 @@ void unifyVV(Tree* left, Tree* right) {
         }
         
         if (ePosLeft == -1 && ePosRight == -1) {
-            //            eqvl.push_back(new set<string>(l, r)); // FIXME: possible problems
-            set<string> item;
-            item.insert("`a");
-            eqvl.push_back(item);
+            insertTypevarNamePairToEqvl(l, r);
             return;
         } else if (ePosLeft == -1) {
             eqvl[ePosRight].insert(l); // FIXME: possible problems about adding element to a set by vector iterator.
@@ -525,27 +570,12 @@ void unifyVV(Tree* left, Tree* right) {
         }
         return;
     } else if (mitLeft == bounds.end()) { /* bound the free variable to the other's bounded final term. */
-        bounds[l] = mitRight->second; // FIXME: possible problems by using string key as index
+        bounds[l] = mitRight->second;
     } else if (mitRight == bounds.end()) {
-        bounds[r] = mitLeft->second; // FIXME: possible problems by using string key as index
+        bounds[r] = mitLeft->second;
     } else if (equalsFinalTerm(bounds[l], bounds[r])) { // already bounded to same final term, do nothing.
     } else {
         printBottom();
     }
     
 }
-
-
-/* TODO: bound the var to the term in bounds.
- case_0: var not in the map,                                        #add pair to bounds: bound var to term in bounds
- case_1: var has already bounded to the same final term,            #do nothing
- case_1: var has already bounded to the different address, same type,  final term,            #compare identity, dif>>BOTTOM or same>>repace.
- case_2: var has already bounded to a different address, same type, not final term, #change var to bound to new final term in bounds
- case_3: var has already bounded to a different type of term,       #BOTTOM
- case_4: var has not bounded to any term, but equals to other vars, #update the var and its equals to bound to term in maps
- */
-void boundVarToFinalTermInMap(Tree *var, Tree *term) {
-    
-}
-
-
