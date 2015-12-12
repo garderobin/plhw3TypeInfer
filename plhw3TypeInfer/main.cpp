@@ -4,7 +4,8 @@
 //
 //  Created by Jasmine Liu on 12/3/15.
 //  Copyright © 2015 Jasmine Liu. All rights reserved.
-// TODO: output with replacement by BFS
+//  testcases: (`a, `a)->`b & ([`b], [`c])->`c
+
 
 #include <iostream>
 #include <vector>
@@ -29,10 +30,8 @@ const state PRIMITIVE_TYPE_STATE[] = {INT, REAL, STR};
 const string PRIMITIVE_TYPE_NAME[] = {"int", "real", "str"};
 
 /* MARK: Classes */
-/* Every tree represents a type.
- only ARGLIST and LISTTYPE can be a tree with children;
- all of its children are pointers to types;
- a query has at most 4 top trees. */
+/* Every tree represents a TYPE.
+ Only ARGLIST and LISTTYPE can be a tree with children; All children are pointers to types; */
 class Tree {
 public:
     state type; // TYPEVAR, INT, REAL, STR, FUNCTYPE, LISTTYPE
@@ -44,7 +43,7 @@ public:
     virtual vector<Tree*>::size_type getChildCount() { return 0; }
     virtual string getReplaceVarname(vector<set<string>>& eqNames) { return nameStr; }
     virtual string getOutputStr(map<string, Tree*>& bounds, vector<set<string>>& eqNames, map<string, set<Tree*>>& eqTrees) { return nameStr; }
-    virtual void finalize() { //FIXME: 需要把没一轮的leftTree和rightTree储存下来
+    virtual void finalize() { // when set a type to final, its ancestors may also become final at the same time.
         final = true;
         if (parent != NULL) {
             parent->final = true;
@@ -162,10 +161,10 @@ public:
     
 /* MARK: Global Variables */
 Tree *leftTree, *rightTree;
-set<Tree*> roots;
-map<string, Tree*> bounds; //typevar's nameStr as key, (bound to) final type as value.
-vector<set<string>> eqNames; //equivalent typevars in a set, all set in a vector.
-map<string, set<Tree*>> eqTrees; //equivalent trees, key is always the front of a set in eqNames
+set<Tree*> roots;                   // store two root tree pointers for use of finalization.
+map<string, Tree*> bounds;          // typevar's nameStr as key, (bound to) final type as value.
+vector<set<string>> eqNames;        // equivalent typevars in a set, all set in a vector.
+map<string, set<Tree*>> eqTrees;    // equivalent trees, key is always the front of a set in eqNames
     
 /* Printers */
 void printError();
@@ -205,7 +204,7 @@ int main(int argc, const char * argv[]) {
     string line;
     while(getline(cin, line)) {
         processLine(line);
-        cout << leftTree->getOutputStr(bounds,eqNames, eqTrees) << endl;
+        cout << leftTree->getOutputStr(bounds, eqNames, eqTrees) << endl;
     }
     return 0;
 }
@@ -218,16 +217,13 @@ int test() {
     
 int processLine(string& line) {
     string s = trim(line), sn;
-    if (s.empty()) {
-        printError();
-    }
+    if (s.empty()) { printError(); }
     if (s.compare("QUIT") == 0) { exit(0); } // process "QUIT"
-    deleteAllSpacesAndTabs(s, sn);
+    deleteAllSpacesAndTabs(s, sn); // make validness checking easier.
     if (!isValidInputLine(sn)) {
-        printError();
-    }
+        printError(); }
     unify(leftTree, rightTree);
-    roots.insert(leftTree);
+    roots.insert(leftTree); // store root trees, because in finalization step of bounding, child trees needs their parents.
     roots.insert(rightTree);
     return 0;
 }
@@ -249,16 +245,16 @@ void printBottom() {
 void finishNode(stack<state>& trans, stack<Tree*>& nodes) {
     Tree *cur, *parent;
     state curState = UNIFICATION_QUERY;
-    while (!trans.empty() && ((curState = trans.top()) == FUNCTYPE)) {
+    while (!trans.empty() && ((curState = trans.top()) == FUNCTYPE)) { //FUNCTYPE on top can only be the case that ARGLIST has done.
         trans.pop();
-        cur = nodes.top(); //FUNCTYPE里面的参数
-        nodes.pop(); //FUNCTYPE ENDS
+        cur = nodes.top(); // the just finished return type (last child) of a FUNCTYPE
+        nodes.pop(); //FUNCTYPE ends
         parent = nodes.top();
         cur->parent = parent;
         parent->addChild(cur);
     }
     // MARK: possible mistakes.
-    if (!trans.empty() && (curState == ARGLIST || curState == LISTTYPE)) { // 此时第二晚的node:parent也必须是FuncTree, ListTree
+    if (!trans.empty() && (curState == ARGLIST || curState == LISTTYPE)) { // the second latest node:parent must be FuncTree, ListTree
         cur = nodes.top(); // e.g VarTree 此前只退了trans没退nodes
         nodes.pop();
         parent = nodes.top();
@@ -285,17 +281,20 @@ bool isValidInputLine(string& s) {
             else if (isValidCharAfterType(s, i)) {
                 trans.pop(); //typevar ends
                 finishNode(trans, nodes);
-            } else { return false; }
+            } else {
+                return false; }
         } else if (!trans.empty() && trans.top() == VARNAME_FIRST) {
             if (isalpha(c)) {
                 trans.pop();
                 trans.push(VARNAME_REST);
                 nodes.top()->nameStr += c;
                 continue;
-            } else { return false; }
+            } else {
+                return false; }
         }
         
-        if (!isValidWithNonTYPEVARTypeOnStackTop(trans, nodes, i, s)) { return false; }
+        if (!isValidWithNonTYPEVARTypeOnStackTop(trans, nodes, i, s)) {
+            return false; }
     }
     /* Finish the last type */
     if (trans.empty()) { // the last type is not a typevar
@@ -329,26 +328,28 @@ bool isValidCharAfterType(string& s, string::size_type pos) {
 bool isValidWithNonTYPEVARTypeOnStackTop(stack<state>& trans, stack<Tree*>& nodes, string::size_type& i, string & s) {
     switch (s[i]) { //因为上边已经处理过TYPEVAR的结束问题，这里不用担心开启新type的那几个标志符会与前面导致非法输入的问题。结束符要检查需要孩子的时候孩子是否为空。
         case ')':
-            if (trans.empty() || trans.top() != ARGLIST || s[i-1] == ',' || s[i+1] != '-' || nodes.top()->getChildCount() < 1) { return false; }
+            if (trans.empty() || trans.top() != ARGLIST || s[i-1] == ',' || s[i+1] != '-' || nodes.top()->getChildCount() < 1) {
+                return false; }
             trans.pop(); //只退ARGLIST不退FUNCTYPE, 也没有树可以退
             break;
         case ']':
-            if (trans.empty() || trans.top() != LISTTYPE || nodes.top()->type != LISTTYPE || nodes.top()->getChildCount() != 1) { return false; }
+            if (trans.empty() || trans.top() != LISTTYPE || nodes.top()->type != LISTTYPE || nodes.top()->getChildCount() != 1) {
+                return false; }
             trans.pop();
             finishNode(trans, nodes);
             break;
         case '&': //&, - 和, 来结束一个typevar及其嵌套的函数的情况上面已经处理过，这里不需要考虑, 但他们接下来必须跟新type
-            if (trans.empty() || trans.top() != UNIFICATION_QUERY || !isValidCharStartType(s, i+1)) { return false; }
+            if (trans.empty() || trans.top() != UNIFICATION_QUERY || !isValidCharStartType(s, i+1)) {
+                return false; }
             trans.pop();
             leftTree = nodes.top(); //此时理论上nodes这个栈里面也只剩一个Tree并且它就是leftTree
             nodes.pop();
             break;
-        case '-': // FUNCTYPE 在top只能是arglist已经结束的情况
-            if (trans.empty() || trans.top() != FUNCTYPE || s[++i] !='>' || !isValidCharStartType(s, i+1)) { return false; }
+        case '-': return !(trans.empty() || trans.top() != FUNCTYPE || s[++i] !='>' || !isValidCharStartType(s, i+1));
+            if (trans.empty() || trans.top() != FUNCTYPE || s[++i] !='>' || !isValidCharStartType(s, i+1)) {
+                return false; }
             else { break; }
-        case ',':
-            if (trans.empty() || trans.top() != ARGLIST || !isValidCharStartType(s, i+1) || nodes.top()->getChildCount()<1) { return false; }
-            else { break; }
+        case ',': return !(trans.empty() || trans.top() != ARGLIST || !isValidCharStartType(s, i+1) || nodes.top()->getChildCount()<1);
         case '(': //上面已经处理过TYPEVAR还在继续而出现开启一个新type的标志的情况，这里不需要考虑
             trans.push(FUNCTYPE);
             trans.push(ARGLIST);
@@ -362,16 +363,10 @@ bool isValidWithNonTYPEVARTypeOnStackTop(stack<state>& trans, stack<Tree*>& node
             trans.push(VARNAME_FIRST);
             nodes.push(new VarTree()); // this VarTree has only name "`" which needs to be appended.
             break;
-        case 'i':
-            if (isValidPrimitiveType(0, trans, nodes, i, s)) { break; }
-            else { return false; }
-        case 'r':
-            if (isValidPrimitiveType(1, trans, nodes, i, s)) { break; }
-            else { return false; }
-        case 's':
-            if (isValidPrimitiveType(2, trans, nodes, i, s)) { break; }
-            else { return false; }
-        default: return false;
+        case 'i': return isValidPrimitiveType(0, trans, nodes, i, s);
+        case 'r': return isValidPrimitiveType(1, trans, nodes, i, s);
+        case 's': return isValidPrimitiveType(2, trans, nodes, i, s);
+        default: return false; // not allowed characters.
     }
     return true;
 }
@@ -401,7 +396,7 @@ bool equalsFinalTerm (Tree* t1, Tree* t2) {
     
 /* Based on trimmed str. (do not check all chars valid, or transthesis valid.)
 Only check invalid case: anything + spaces + alpha/digit except for primitive types. */
-void deleteAllSpacesAndTabs(string& s, string& rst) {
+void deleteAllSpacesAndTabs(string& s, string& rst) { // substr(posStart, posEnd) (inclusive, exclusive) represents a trailing spaces and tabs.
     for (string::size_type posStart = 0, posEnd = 0, len = s.length(); posStart < len; posStart++) {
         if (!isspace(s[posStart])) {
             rst += s[posStart];
@@ -409,13 +404,15 @@ void deleteAllSpacesAndTabs(string& s, string& rst) {
         }
         
         for (posEnd = posStart + 1; posEnd < len && isspace(s[posEnd]); posEnd++) {}
-        //这一步能够解决所有的"->"中间有空格的情况,没有空格的“->”作为一个functype开头或者单独的“-”和“>”type检查里面处理
-        if (posStart > 0 && s[posStart-1] == '-') {
+        
+        if (posStart > 0 && s[posStart-1] == '-') { // Spaces between '-' and '>' are valid
             if (s[posEnd] == '>') { continue; }
-            else { printError(); }
+            else {
+                printError(); }
         }
         if (s[posEnd] == '>') { printError(); }
-        else if (isdigit(s[posEnd])) { printError(); }
+        else if (isdigit(s[posEnd])) {
+            printError(); }
         else if (isalpha(s[posEnd])) {
             switch (s[posEnd]) {
                 case 'i':
@@ -455,12 +452,8 @@ void insertEqvlTrees(Tree *left, Tree *right) {
     treeSet.insert(right);
     eqTrees[left->nameStr] = treeSet;
 }
-/* Insert new typevar equivalence pair.
-     如果是var和var的pair,
-     因为插入新pair的时候永远用eqNames的开头来做eqTrees的key，所以eqNames的检索一定可以找到eqTrees.但是反过来，插入eqTress的时候未必有对等的eqNames。
-     如果是var和term的对等关系，只操作eqTrees.
-     不记录term和term的对等关系，因为没有意义。
-     MARK: doing 在解决 `a = [`b], `b = `c 的问题*/
+/* Insert new typevar equivalence pair. Update both eqNames and eqTrees.
+如果是var和var的pair,因为插入新pair的时候永远用eqNames的开头来做eqTrees的key，所以eqNames的检索一定可以找到eqTrees.但插入eqTress的时候未必有对等的eqNames.*/
 void addEquivalentVVPair(Tree *left, Tree *right) {
     map<string, set<Tree*>>::iterator ml = eqTrees.find(left->nameStr), mr = eqTrees.find(right->nameStr), mEnd = eqTrees.end();
     if (ml != mEnd && mr == mEnd) {
@@ -479,12 +472,19 @@ void addEquivalentVVPair(Tree *left, Tree *right) {
 }
 
 
-/* 如果这个var没有任何var equivalent，不会进到这个函数里面来 */
+/* When we find a typevar equivalent to a term(not final), only update eqTrees.*/
 void addEquivalentVTPair(Tree *var, Tree *term) {
     map<string, set<Tree*>>::iterator ml = eqTrees.find(var->nameStr), mEnd = eqTrees.end();
-    if (ml != mEnd) {
+    if (ml != mEnd) { // if the var has another or more equivalent terms, unify each of them.
         for (set<Tree*>::iterator it = ml->second.begin(), sEnd = ml->second.end(); it != sEnd; ++it) {
-            if ((*it)->type != TYPEVAR && (*it)->getChildCount() != term->getChildCount()) { printBottom(); }
+            if ((*it)->type != TYPEVAR) {
+                if ((*it)->getChildCount() != term->getChildCount()) {
+                    printBottom();
+                } else {
+                    unifyTT(*it, term);
+                }
+            }
+            
         }
         ml->second.insert(term);
     } else { insertEqvlTrees(var, term); }
@@ -526,7 +526,8 @@ void boundFreeVarToFinalTermInMap(Tree *var, Tree *term) {
     if (treeEqv != tEnd) {
         for (set<Tree*>::iterator it = treeEqv->second.begin(), sEnd = treeEqv->second.end(); it != sEnd; ++it) {
             if ((*it)->type == TYPEVAR) { boundSingleVarToTerm(*it, term); }
-            else if ((*it)->getChildCount() != term->getChildCount()) { printBottom(); }
+            else if ((*it)->getChildCount() != term->getChildCount()) {
+                printBottom(); }
             else { unifyChildren(*it, term); }
         }
     }
@@ -555,7 +556,8 @@ void unify(Tree* left, Tree* right) {
     if (left->type == TYPEVAR && right->type == TYPEVAR) { unifyVV(left, right); }
     else if (left->type == TYPEVAR && right->type != TYPEVAR) { unifyVT(left, right); }
     else if (left->type != TYPEVAR && right->type == TYPEVAR) { unifyVT(right, left); }
-    else { unifyTT(left, right); }
+    else {
+        unifyTT(left, right); }
 }
     
     
@@ -565,12 +567,14 @@ void unify(Tree* left, Tree* right) {
      case_2: both final:                    eg. int & int,                          # do nothing
      case_3: at least one is not final:     eg. final() & (B1, B2, ... Bn)          # for every (Ai, Bi), unify(Ai, Bi)*/
 void unifyTT(Tree* left, Tree* right) {
-    if (left->type != right->type) { printBottom(); }
+    if (left->type != right->type) {
+        printBottom(); }
     if (left->type == FUNCTYPE && right->type == FUNCTYPE && left->getChildCount() != right->getChildCount()) {
         printError();
     }
     if (left->final && right->final) {
-        if (!equalsFinalTerm(left, right)) { printBottom(); }
+        if (!equalsFinalTerm(left, right)) {
+            printBottom(); }
         else { return; }
     } else { unifyChildren(left, right); }
     
@@ -585,103 +589,87 @@ void unifyTT(Tree* left, Tree* right) {
      case_1: unbound(var),  final(term),    #bound the var to the term and update bounds.
      case_2: unbound(var),  unfinal(term),  #try finding var's name in term's posterities. If found, #BOTTOM.
      
-     //term has to be FUNCTYPE or LISTTYPE, else it is final
-     MARK:doing 检查eqTrees里面是否有与term类型不相同的对等节点，如果有，BOTTOM
-     */
+     //term has to be FUNCTYPE or LISTTYPE, else it is final*/
 void unifyVT(Tree* var, Tree* term) {
     string varStr = var->getOutputStr(bounds, eqNames, eqTrees);
     map<string, Tree*>::iterator varBound = bounds.find(varStr), bEnd = bounds.end();
     if (varBound != bEnd) {
         Tree* vb = varBound->second;
         if (term->final) {              //bound(var), final(term)
-            if (!equalsFinalTerm(vb, term)) { printBottom(); }
+            if (!equalsFinalTerm(vb, term)) {
+                printBottom(); }
         } else {                        //bound(var), unFinal(term) 这里不用管eqTrees因为后者在设置bound的时候就已经删掉了多余的东西
-            if (vb->type != term->type) { printBottom(); }
+            if (vb->type != term->type) {
+                printBottom(); }
             unifyChildren(vb, term); // FIXME: possible improvements here.
         }
     } else { //unbound but may have equivalent trees
         if (term->final) {              //unbound(var), final(term)
             boundFreeVarToFinalTermInMap(var, term);
         } else {                        //unbound(var), unfinal(term)
-            if (isFreeVarAPosteriorOfUnfinalListOrFunc(var, term)) { printBottom(); }
+            if (isFreeVarAPosteriorOfUnfinalListOrFunc(var, term)) {
+                printBottom(); }
             // add the term to the eqTrees for this var
             addEquivalentVTPair(var, term); //FIXME: possible problems of missing cases consideration.
         }
         
     }
-//    if (varBound == bEnd && term->final) {              //unbound(var), final(term)
-//            boundFreeVarToFinalTermInMap(var, term);
-//        } else if (varBound != bEnd && !term->final) {      //bound(var), unFinal(term)
-//            //        eqTrees[varStr] // FIXME: bound(var), unFinal(term), handle eqTrees
-//            Tree* vb = varBound->second;
-//            if (vb->type != term->type) {
-//                printBottom();
-//            }
-//            unifyChildren(vb, term); // FIXME: possible improvements here.
-//        } else if (varBound != bEnd && term->final) {       //bound(var), final(term)
-//            if (!equalsFinalTerm(varBound->second, term)) { printBottom(); }
-//        } else {                                            //unbound(var),  unfinal(term)
-//            if (isFreeVarAPosteriorOfUnfinalListOrFunc(var, term)) {
-//                printBottom();
-//            }
-//        }
-//        
-//    }
+
 }
     
-    /* Unify two typevars. (not tested)
-     Traverse both varnames in bounds to find whether eigher is bound to a final tree.
+/* Unify two typevars. (not tested)
+Traverse both varnames in bounds to find whether eigher is bound to a final tree.
      case_0: one is bounded to final, the other not,    #bound the other and all its equivalence to the final term.
      case_1: both are bounded to same final,            #do nothing
      case_2: both are bounded, but to different final,  #BOTTOM
      case_3: neither is bounded, add them to eqNames sets.
      Update everything in bounds that use the two name as keys.
-     */
-    void unifyVV(Tree* left, Tree* right) {
-        string l = left->nameStr, r = right->nameStr;
-        map<string, Tree*>::iterator mitLeft = bounds.find(l), mitRight = bounds.find(r); //TODO: 改两遍遍历为一遍遍历
+ */
+void unifyVV(Tree* left, Tree* right) {
+    string l = left->nameStr, r = right->nameStr;
+    map<string, Tree*>::iterator mitLeft = bounds.find(l), mitRight = bounds.find(r); //TODO: 改两遍遍历为一遍遍历
         
-        if (mitLeft == bounds.end() && mitRight == bounds.end()) { /* neither is bounded, update the eqNames sets. */
-            /* Find their previous equivalences. MARK: 遍历eqNames vector */
-            vector<set<string>>::size_type ePosLeft = -1, ePosRight = -1, len = eqNames.size();
-            vector<set<string>>::iterator eit = eqNames.begin();
-            bool addRightIter = true;
-            for (vector<set<string>>::size_type i = 0; i < len && (ePosLeft == -1 || ePosRight == -1); ++i) {
-                set<string>::iterator eitLeft = eqNames[i].find(l), eitRight = eqNames[i].find(r), setEnd = eqNames[i].end();
-                if (eitLeft != setEnd) { ePosLeft = i; }
-                if (eitRight != setEnd) {
-                    ePosRight = i;
-                    addRightIter = false;
-                }
-                if (addRightIter) { ++eit; } // stop iterating once found the pos for right.
+    if (mitLeft == bounds.end() && mitRight == bounds.end()) { /* neither is bounded, update the eqNames sets. */
+        /* Find their previous equivalences. MARK: 遍历eqNames vector */
+        vector<set<string>>::size_type ePosLeft = -1, ePosRight = -1, len = eqNames.size();
+        vector<set<string>>::iterator eit = eqNames.begin();
+        bool addRightIter = true;
+        for (vector<set<string>>::size_type i = 0; i < len && (ePosLeft == -1 || ePosRight == -1); ++i) {
+            set<string>::iterator eitLeft = eqNames[i].find(l), eitRight = eqNames[i].find(r), setEnd = eqNames[i].end();
+            if (eitLeft != setEnd) { ePosLeft = i; }
+            if (eitRight != setEnd) {
+                ePosRight = i;
+                addRightIter = false;
             }
-            
-            if (ePosLeft == -1 && ePosRight == -1) {
-                addEquivalentVVPair(left, right);
-                return;
-            } else if (ePosLeft == -1) {
-                eqNames[ePosRight].insert(l); // FIXME: possible problems about adding element to a set by vector iterator.
-                eqTrees[*(eqNames[ePosRight].begin())].insert(left);
-            } else if (ePosRight == -1) {
-                eqNames[ePosLeft].insert(r); // FIXME: possible problems about adding element to a set by vector iterator.
-                eqTrees[*(eqNames[ePosLeft].begin())].insert(right);
-            } else if (ePosRight == ePosLeft){ // both have same equivalences, do nothing
-            } else { // left and right have different eqNames sets, combine them.
-                eqNames[ePosLeft].insert(eqNames[ePosRight].begin(), eqNames[ePosRight].end());
-                eqNames.erase(eit); // erase the set with the right str in eqNames
-                string rOutputStr = *(eqNames[ePosRight].begin());
-                set<Tree*> rTreeSet = eqTrees[rOutputStr];
-                eqTrees[*(eqNames[ePosLeft].begin())].insert(rTreeSet.begin(), rTreeSet.end());
-                eqTrees.erase(rOutputStr);
-            }
-            return;
-        } else if (mitLeft == bounds.end()) { /* bound the free variable to the other's bounded final term. */
-            bounds[l] = mitRight->second;
-        } else if (mitRight == bounds.end()) {
-            bounds[r] = mitLeft->second;
-        } else if (equalsFinalTerm(bounds[l], bounds[r])) { // already bounded to same final term, do nothing.
-        } else {
-            printBottom();
+            if (addRightIter) { ++eit; } // stop iterating once found the pos for right.
         }
+            
+        if (ePosLeft == -1 && ePosRight == -1) {
+            addEquivalentVVPair(left, right);
+            return;
+        } else if (ePosLeft == -1) {
+            eqNames[ePosRight].insert(l); // FIXME: possible problems about adding element to a set by vector iterator.
+            eqTrees[*(eqNames[ePosRight].begin())].insert(left);
+        } else if (ePosRight == -1) {
+            eqNames[ePosLeft].insert(r); // FIXME: possible problems about adding element to a set by vector iterator.
+            eqTrees[*(eqNames[ePosLeft].begin())].insert(right);
+        } else if (ePosRight == ePosLeft){ // both have same equivalences, do nothing
+        } else { // left and right have different eqNames sets, combine them.
+            eqNames[ePosLeft].insert(eqNames[ePosRight].begin(), eqNames[ePosRight].end());
+            eqNames.erase(eit); // erase the set with the right str in eqNames
+            string rOutputStr = *(eqNames[ePosRight].begin());
+            set<Tree*> rTreeSet = eqTrees[rOutputStr];
+            eqTrees[*(eqNames[ePosLeft].begin())].insert(rTreeSet.begin(), rTreeSet.end());
+            eqTrees.erase(rOutputStr);
+        }
+        return;
         
-    }
+    } else if (mitLeft == bounds.end()) { /* bound the free variable to the other's bounded final term. */
+        bounds[l] = mitRight->second;
+    } else if (mitRight == bounds.end()) {
+        bounds[r] = mitLeft->second;
+    } else if (equalsFinalTerm(bounds[l], bounds[r])) { // already bounded to same final term, do nothing.
+    } else {
+        printBottom(); }
+        
+}
